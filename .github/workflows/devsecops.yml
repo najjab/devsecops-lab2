@@ -38,7 +38,7 @@ jobs:
       # 3. Build Docker
       ############################################
       - name: Build Docker image
-        run: docker build -t devsecops-api ./docker
+        run: docker build -t devsecops-api .
 
       ############################################
       # 4. Scan Docker avec Trivy
