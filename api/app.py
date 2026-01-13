@@ -1,48 +1,84 @@
-from flask import Flask, request
-import hashlib
+from flask import Flask, request, jsonify
+import os
+import re
 import subprocess
+import bcrypt
+
+from flask_wtf import CSRFProtect
+from flask_wtf.csrf import CSRFError
+
 app = Flask(__name__)
 
-# Mot de passe en dur (mauvaise pratique)
-ADMIN_PASSWORD = "123456"
+# ----------------------------
+# Config / Secrets
+# ----------------------------
+app.secret_key = os.getenv("FLASK_SECRET_KEY", "change-me-please")
 
-# Cryptographie faible (MD5)
-def hash_password(password):
-    return hashlib.md5(password.encode()).hexdigest()
+# ✅ Active la protection CSRF globale (reconnu par SonarQube)
+csrf = CSRFProtect(app)
+
+# ✅ Admin password via variable d'environnement
+# Linux/Mac: export ADMIN_PASSWORD="StrongPass123!"
+# Windows: setx ADMIN_PASSWORD "StrongPass123!"
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "ChangeMeNow!")
+ADMIN_HASH = bcrypt.hashpw(ADMIN_PASSWORD.encode(), bcrypt.gensalt())
+
+HOST_REGEX = re.compile(r"^([a-zA-Z0-9\-\.]{1,253}|\d{1,3}(\.\d{1,3}){3})$")
 
 
-@app.route("/login")
+# ----------------------------
+# Gestion erreur CSRF (propre)
+# ----------------------------
+@app.errorhandler(CSRFError)
+def handle_csrf_error(e):
+    return jsonify({"error": "CSRF detected", "details": str(e)}), 403
+
+
+# ----------------------------
+# Routes corrigées
+# ----------------------------
+
+# ✅ Login (POST) + bcrypt
+@app.route("/login", methods=["POST"])
 def login():
-    username = request.args.get("username")
-    password = request.args.get("password")
+    data = request.get_json(silent=True) or {}
+    username = (data.get("username") or "").strip()
+    password = (data.get("password") or "").strip()
 
-    # Authentification faible
-    if username == "admin" and hash_password(password) == hash_password(ADMIN_PASSWORD):
-        return "Logged in"
+    if not username or not password:
+        return jsonify({"status": "error", "message": "Missing credentials"}), 400
 
-    return "Invalid credentials"
+    if username == "admin" and bcrypt.checkpw(password.encode(), ADMIN_HASH):
+        return jsonify({"status": "success", "message": "Logged in"}), 200
+
+    return jsonify({"status": "error", "message": "Invalid credentials"}), 401
 
 
-@app.route("/ping")
+# ✅ Ping (POST) sans shell=True + validation host
+@app.route("/ping", methods=["POST"])
 def ping():
-    host = request.args.get("host", "localhost")
+    data = request.get_json(silent=True) or {}
+    host = (data.get("host") or "127.0.0.1").strip()
 
-    # Injection de commande (shell=True)
-    result = subprocess.check_output(
-        f"ping -c 1 {host}",
-        shell=True
-    )
-    return result
+    if not HOST_REGEX.match(host):
+        return jsonify({"status": "error", "message": "Invalid host"}), 400
+
+    try:
+        out = subprocess.check_output(["ping", "-c", "1", host], timeout=3)
+        return jsonify({"output": out.decode(errors="ignore")}), 200
+    except subprocess.TimeoutExpired:
+        return jsonify({"status": "error", "message": "Ping timeout"}), 408
+    except subprocess.CalledProcessError:
+        return jsonify({"status": "error", "message": "Ping failed"}), 400
 
 
-@app.route("/hello")
+# ✅ Hello : JSON (évite XSS)
+@app.route("/hello", methods=["GET"])
 def hello():
-    name = request.args.get("name", "user")
-
-    # XSS potentiel
-    return f"<h1>Hello {name}</h1>"
+    name = (request.args.get("name") or "user").strip()
+    return jsonify({"message": f"Hello {name}"}), 200
 
 
 if __name__ == "__main__":
-    # Debug activé
-    app.run(debug=True)
+    # ✅ debug OFF (exigé)
+    app.run(host="0.0.0.0", port=5000, debug=False)
