@@ -1,126 +1,48 @@
 from flask import Flask, request
-import sqlite3
+import hashlib
 import subprocess
-import os
-import bcrypt
-import re
-from werkzeug.utils import secure_filename
-
 app = Flask(__name__)
 
-# Secret via variable d’environnement
-SECRET_KEY = os.getenv("APP_SECRET_KEY", "default-key")
+# Mot de passe en dur (mauvaise pratique)
+ADMIN_PASSWORD = "123456"
+
+# Cryptographie faible (MD5)
+def hash_password(password):
+    return hashlib.md5(password.encode()).hexdigest()
 
 
-# ----------------------------------------------------------
-#  LOGIN SÉCURISÉ
-# ----------------------------------------------------------
-@app.route("/login", methods=["POST"])
+@app.route("/login")
 def login():
-    username = request.json.get("username")
-    password = request.json.get("password")
+    username = request.args.get("username")
+    password = request.args.get("password")
 
-    if not username or not password:
-        return {"error": "Missing credentials"}, 400
+    # Authentification faible
+    if username == "admin" and hash_password(password) == hash_password(ADMIN_PASSWORD):
+        return "Logged in"
 
-    conn = sqlite3.connect("users.db")
-    cursor = conn.cursor()
-
-    # Requête paramétrée -> pas de SQL Injection
-    cursor.execute("SELECT password FROM users WHERE username=?", (username,))
-    row = cursor.fetchone()
-
-    if row and bcrypt.checkpw(password.encode(), row[0]):
-        return {"status": "success", "user": username}
-
-    return {"status": "error", "message": "Invalid credentials"}
+    return "Invalid credentials"
 
 
-# ----------------------------------------------------------
-#  PING SÉCURISÉ (PAS DE shell=True)
-# ----------------------------------------------------------
-@app.route("/ping", methods=["POST"])
+@app.route("/ping")
 def ping():
-    host = request.json.get("host", "")
+    host = request.args.get("host", "localhost")
 
-    # Validation stricte
-    if not re.match(r"^[a-zA-Z0-9\.\-]+$", host):
-        return {"error": "Invalid hostname"}, 400
-
-    try:
-        # plus de shell=True -> plus de faille B602
-        output = subprocess.check_output(["ping", "-c", "1", host])
-        return {"output": output.decode()}
-    except Exception as e:
-        return {"error": str(e)}, 400
+    # Injection de commande (shell=True)
+    result = subprocess.check_output(
+        f"ping -c 1 {host}",
+        shell=True
+    )
+    return result
 
 
-# ----------------------------------------------------------
-#  COMPUTE SÉCURISÉ (supprime eval)
-# ----------------------------------------------------------
-@app.route("/compute", methods=["POST"])
-def compute():
-    expression = request.json.get("expression", "")
-
-    # Autorisation des caractères uniquement
-    allowed = "0123456789+-*/(). "
-    if any(c not in allowed for c in expression):
-        return {"error": "Invalid expression"}, 400
-
-    try:
-        # Sandbox minimale sans builtins
-        result = eval(expression, {"__builtins__": {}}, {})
-        return {"result": result}
-    except Exception:
-        return {"error": "Invalid expression"}, 400
-
-
-# ----------------------------------------------------------
-#  HASH SÉCURISÉ (bcrypt -> supprime B324)
-# ----------------------------------------------------------
-@app.route("/hash", methods=["POST"])
-def hash_password():
-    pwd = request.json.get("password", "")
-
-    if not pwd:
-        return {"error": "Missing password"}, 400
-
-    hashed = bcrypt.hashpw(pwd.encode(), bcrypt.gensalt())
-    return {"bcrypt": hashed.decode()}
-
-
-# ----------------------------------------------------------
-#  FILE READ SÉCURISÉ
-# ----------------------------------------------------------
-@app.route("/readfile", methods=["POST"])
-def readfile():
-    filename = request.json.get("filename", "")
-
-    # safe filename
-    safe = secure_filename(filename)
-    path = os.path.join("safe_files", safe)
-
-    if not os.path.exists(path):
-        return {"error": "File not found"}, 404
-
-    with open(path, "r") as f:
-        content = f.read()
-
-    return {"content": content}
-
-
-# ----------------------------------------------------------
-#  DEBUG SUPPRIMÉ
-# ----------------------------------------------------------
-@app.route("/debug", methods=["GET"])
-def debug():
-    return {"message": "Debug disabled"}, 403
-
-
-@app.route("/hello", methods=["GET"])
+@app.route("/hello")
 def hello():
-    return {"message": "Welcome to the secure DevSecOps API"}
+    name = request.args.get("name", "user")
+
+    # XSS potentiel
+    return f"<h1>Hello {name}</h1>"
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    # Debug activé
+    app.run(debug=True)
